@@ -24,6 +24,14 @@ jobs:
       - name: DSP checks
         run: ctest --test-dir build -C Release --verbose --output-on-failure
       - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: UnchainedDrive-QC-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            build/Testing/Temporary/LastTest.log
+            build/ui-qc/**
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
         with:
           name: UnchainedDrive-${{ matrix.os }}-${{ matrix.arch }}
           path: build/UnchainedDrive_artefacts/Release/**

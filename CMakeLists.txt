@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(UnchainedDrive VERSION 0.7.0 LANGUAGES C CXX)
+project(UnchainedDrive VERSION 0.8.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(FetchContent)
@@ -32,3 +32,5 @@ if(MSVC)
  target_compile_options(processor_test PRIVATE /utf-8)
 endif()
 add_test(NAME processor_test COMMAND processor_test)
+
+add_test(NAME ui_qc COMMAND processor_test --ui)
