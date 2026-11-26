@@ -1,5 +1,5 @@
 # UNCHAINED DRIVE — Manuel utilisateur
-Liberty Music Software · v0.8.0 · Candidat de précommercialisation
+Liberty Music Software · v1.0.0 RC1 · Candidat de précommercialisation
 
 ## Installation et démarrage
 macOS Apple Silicon : AU et VST3. Windows x64 : VST3 et application autonome. Les installateurs de cette version doivent être validés avant diffusion. Fermez votre DAW, installez le format voulu, relancez le logiciel et actualisez son navigateur de plugins. Sur macOS, les composants sont installés dans /Library/Audio/Plug-Ins/Components et les VST3 dans /Library/Audio/Plug-Ins/VST3. Windows : dossier VST3 standard du système. Ne supprimez pas les fichiers de vos projets pour désinstaller le plugin.
