@@ -21,7 +21,7 @@ struct Params {
  float blend=.5f,driveB=.3f,cross3=4000,cross4=8000;
  int tubeType=0,tapeSpeed=1,consoleType=0,fuzzType=0,diodeType=0,foldType=0;
  float tubeSag=.35f,tapeMemory=.25f,wow=0,flutter=0,edge=.5f,headroom=0,starve=0,fuzzGate=.1f,diodeThreshold=.7f,diodeHard=.35f,bitDepth=12,rateReduction=0,foldDepth=.5f;
- bool reverseStages=false,linearPhase=false,perceptual=false;
+ bool reverseStages=false,linearPhase=false,perceptual=false,antiAlias=false;
  std::array<float,4> eqF{100,400,1600,6400},eqG{},eqQ{1,1,1,1}; std::array<bool,4> eqOn{true,true,true,true};
  std::array<float,2> preF{400,2000},preG{},preQ{1,1}; float preShelfL=0,preShelfH=0;
  std::array<int,5> bandEngine{}; std::array<float,5> bandDrive{.25f,.25f,.25f,.25f,.25f},bandMix{1,1,1,1,1},bandIn{},bandOut{},bandTone{},bandColor{.4f,.4f,.4f,.4f,.4f},bandDyn{.35f,.35f,.35f,.35f,.35f};
@@ -51,6 +51,17 @@ struct LinearSplit {
    __m128 acc=_mm_setzero_ps();for(;k+3<=half;k+=4){auto l=_mm_loadu_ps(hist.data()+center-k-3);l=_mm_shuffle_ps(l,l,_MM_SHUFFLE(0,1,2,3));auto r=_mm_loadu_ps(hist.data()+center+k);acc=_mm_add_ps(acc,_mm_mul_ps(_mm_add_ps(l,r),_mm_loadu_ps(taps[b].data()+k)));}float lanes[4];_mm_storeu_ps(lanes,acc);low+=lanes[0]+lanes[1]+lanes[2]+lanes[3];
 #endif
   }
+  if(vectorize&&stride>1){
+#if defined(__ARM_NEON) || defined(__ARM_NEON__) || defined(__SSE2__) || defined(_M_X64)
+   float lanes[4]={};for(;k+3<=half;k+=4){float v[4];for(int j=0;j<4;++j){unsigned step=unsigned((k+j)*stride);v[j]=hist[(center+size-step)&mask]+hist[(center+step)&mask];}
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    vst1q_f32(lanes,vmlaq_f32(vld1q_f32(lanes),vld1q_f32(v),vld1q_f32(taps[b].data()+k)));
+#else
+    _mm_storeu_ps(lanes,_mm_add_ps(_mm_loadu_ps(lanes),_mm_mul_ps(_mm_loadu_ps(v),_mm_loadu_ps(taps[b].data()+k))));
+#endif
+   }low+=lanes[0]+lanes[1]+lanes[2]+lanes[3];
+#endif
+  }
   for(;k<=half;++k){unsigned step=unsigned(k*stride);low+=taps[b][k]*(hist[(center+size-step)&mask]+hist[(center+step)&mask]);}return low;
  }
  std::array<float,5> process(std::array<float,size>& hist,unsigned& pos,float x,int bands)const{
@@ -61,6 +72,10 @@ struct LinearSplit {
 struct State {float env=0, slow=0, tone=0, body=0, preLow=0,preHigh=0,shelfL=0,shelfH=0,c1=0,c2=0,dc=0,tape=0,hold=0;int counter=0; float circuitEnv=0,magnet=0,tapePhase=0,flutterPhase=0;
  std::array<float,4096> tapeDelay{}; unsigned tapeWrite=0; std::array<float,4> split{};std::array<float,LinearSplit::size> align{},firHistory{};unsigned alignPos=0,firPos=0;
 };
+inline float smoothAbs(float x,float w){float a=std::abs(x);return a>=w?a:.5f*(a*a/w+w);}
+inline float smoothMax(float x,float lo,float w){return .5f*(x+lo+smoothAbs(x-lo,w));}
+inline float smoothClip(float x,float lo,float hi,float w){return -smoothMax(-smoothMax(x,lo,w),-hi,w);}
+inline float smoothFold(float x){float y=fold(x);return y>=0?1.f-smoothAbs(1.f-y,.16f):-1.f+smoothAbs(1.f+y,.16f);}
 inline float curve(int engine,float x,float d,float bias,float color,const Params& p=Params{}){
  const float a=1.f+18.f*d,v=x*a,b=bias*.55f;
  switch(engine){
@@ -68,10 +83,10 @@ inline float curve(int engine,float x,float d,float bias,float color,const Param
  case 1:return v/std::sqrt(1.f+v*v);
  case 2:{float asym=.12f+.28f*p.edge;return v>=0?std::tanh(v*(1.f+color*p.edge)+b)-std::tanh(b):(1.f-asym)*(std::tanh(v*(1.f+color*.3f)/(1.f-asym)+b)-std::tanh(b));}
  case 3:{float h=gain(-p.headroom);float q=v*h;switch(p.consoleType){case 1:return std::tanh(q*.55f)*1.5f;case 2:return (q/std::sqrt(1+q*q))*.9f+std::tanh(q*.11f)*.25f;default:return std::tanh(q*.45f)*1.53f+std::tanh(q*.12f)*.15f;}}
- case 4:{float lim=p.fuzzType==0?.65f:.9f;float gate=.001f+p.fuzzGate*.045f+p.starve*.025f;if(std::abs(x)<gate)return 0;float off=b+p.starve*.4f;float q=v*(2.f+color);return clip(q+off,-lim*(1.f-.35f*p.starve),lim)-clip(off,-lim*(1.f-.35f*p.starve),lim);}
+ case 4:{float lim=p.fuzzType==0?.65f:.9f;float gate=.001f+p.fuzzGate*.045f+p.starve*.025f;float off=b+p.starve*.4f;float q=v*(2.f+color),lo=-lim*(1.f-.35f*p.starve);if(p.antiAlias){float t=clip(std::abs(x)/std::max(.0001f,gate*2.f),0,1);float g=t*t*(3.f-2.f*t);return g*(smoothClip(q+off,lo,lim,.16f)-smoothClip(off,lo,lim,.16f));}if(std::abs(x)<gate)return 0;return clip(q+off,lo,lim)-clip(off,lo,lim);}
  case 5:{float threshold=std::max(.05f,p.diodeThreshold)*(p.diodeType==0?1.f:p.diodeType==1?.65f:1.4f);float t=v+b;auto diode=[&](float q){float lim=threshold*(q<0?1.f-.35f*bias:1.f+.35f*bias);return (1.f-p.diodeHard)*lim*std::tanh(q/lim)+p.diodeHard*clip(q,-lim,lim);};return diode(t)-diode(b);}
  case 6:{float q=std::pow(2.f,clip(p.bitDepth,2.f,16.f)-1.f);return std::round(clip(v,-1.f,1.f)*q)/q;}
- case 7:{float q=v*(.5f+3.f*p.foldDepth+color);if(p.foldType==1)return std::sin(q+b)-std::sin(b);if(p.foldType==2)return fold(q+b+.3f)-fold(b+.3f);return fold(q+b)-fold(b);}
+ case 7:{float q=v*(.5f+3.f*p.foldDepth+color);if(p.foldType==1)return std::sin(q+b)-std::sin(b);float shift=b+(p.foldType==2?.3f:0.f);return p.antiAlias?smoothFold(q+shift)-smoothFold(shift):fold(q+shift)-fold(shift);}
  default:return std::tanh(v);
  }
 }

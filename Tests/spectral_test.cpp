@@ -1,4 +1,5 @@
 #include "../Source/Core.h"
+#include "../Source/SpectralLab.h"
 #include <juce_dsp/juce_dsp.h>
 #include <iostream>
 #include <iomanip>
@@ -16,6 +17,8 @@ int main(){
   double residual=std::max(1.e-15,total-energy[1]-energy[2]-energy[3]);double thd=100*std::sqrt((energy[2]+energy[3])/std::max(1.e-15,energy[1]));double db=10*std::log10(residual/std::max(1.e-15,total));double thdn=100*std::sqrt(std::max(0.,total-energy[1])/std::max(1.e-15,energy[1]));
   std::cout<<engine<<","<<(1<<k)<<","<<thd<<","<<thdn<<","<<db<<","<<ms<<","<<(os?os->getLatencyInSamples():0.f)<<"\n";
  }
+ std::cout<<"v0.7 corner smoothing: engine,factor,legacy_residual_dB,smooth_residual_dB,legacy_ms,smooth_ms\n";
+ for(int engine:{4,7})for(int k=0;k<5;++k){p.engine=engine;p.antiAlias=false;auto a=std::chrono::steady_clock::now();auto legacy=ud::measureCurve(p,k,7000.);auto b=std::chrono::steady_clock::now();p.antiAlias=true;auto smooth=ud::measureCurve(p,k,7000.);auto c=std::chrono::steady_clock::now();if(!legacy.valid||!smooth.valid)return 3;std::cout<<engine<<","<<(1<<k)<<","<<legacy.residualDb<<","<<smooth.residualDb<<","<<std::chrono::duration<double,std::milli>(b-a).count()<<","<<std::chrono::duration<double,std::milli>(c-b).count()<<"\n";}
  // Known intersample peak: fs/4 sine at pi/4 phase, sample peak sqrt(0.5), true peak 1.
  for(double srTest:{44100.,48000.,96000.,192000.}){
   juce::AudioBuffer<float> b(1,1024);juce::dsp::AudioBlock<float> block(b);juce::dsp::Oversampling<float> up(1,2,juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple,true,true);up.initProcessing(1024);

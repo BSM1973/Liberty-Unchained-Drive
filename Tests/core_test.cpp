@@ -21,5 +21,7 @@ int main(){
  {ud::Loudness meter;meter.prepare(48000);for(int i=0;i<48000*8;++i){float x=.1f*std::sin(2*ud::pi*1000*i/48000.f);meter.push(x,x,2);}if(std::abs(meter.integratedValue+20.f)>.5f||meter.rangeValue<0.f||meter.rangeValue>.3f)return 14;meter.resetSession();if(meter.integratedValue>-119.f||meter.rangeValue>=0.f)return 15;++count;}
  {ud::LinearSplit fir;fir.configure({180.f,1200.f,4000.f,8000.f},48000.f,1);std::array<float,ud::LinearSplit::size> h{};for(size_t i=0;i<h.size();++i)h[i]=std::sin(float(i)*.017f)+.1f*std::cos(float(i)*.77f);for(unsigned c:{0u,255u,256u,2048u,8192u,16127u,16383u})for(int b=0;b<4;++b)if(std::abs(fir.convolve(h,c,b,true)-fir.convolve(h,c,b,false))>1e-5f)return 16;++count;}
  {ud::KWeight filter;filter.prepare(48000);double a=0,b=0;for(int i=0;i<48000;++i){float x=.1f*std::sin(2*ud::pi*1000*i/48000.f);float y=filter.run(x);if(i>24000){a+=x*x;b+=y*y;}}if(!std::isfinite(b)||b<=a)return 17;++count;}
+ for(int factor:{2,4,8,16}){ud::LinearSplit fir;fir.configure({180.f,1200.f,4000.f,8000.f},48000.f,factor);std::array<float,ud::LinearSplit::size> h{};for(size_t i=0;i<h.size();++i)h[i]=std::sin(float(i)*.017f);for(unsigned c:{0u,255u,8192u,16383u})for(int b=0;b<4;++b)if(std::abs(fir.convolve(h,c,b,true)-fir.convolve(h,c,b,false))>1e-5f)return 18;++count;}
+ for(int engine:{4,7}){ud::Params p;p.antiAlias=true;for(int i=-1000;i<=1000;++i){float y=ud::curve(engine,float(i)*.002f,.8f,.1f,.4f,p);if(!std::isfinite(y)||std::abs(y)>3.f)return 19;}++count;}
  std::cout<<count<<" DSP cases plus dry and bypass passed\n";
 }
