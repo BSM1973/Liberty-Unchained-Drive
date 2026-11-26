@@ -12,5 +12,6 @@ int main(){
  }
  auto dsp=std::make_unique<ud::Engine>();ud::Params p;p.bypass=true;if(dsp->sample(0,.123f,p)!=.123f)return 3;p.bypass=false;p.mix=0;p.output=0;if(dsp->sample(0,.123f,p)!=.123f)return 4;
  for(int e:{0,3,4,5,7}){ud::Params a,b;b.tubeType=1;b.consoleType=1;b.fuzzType=1;b.diodeType=1;b.foldType=1;double diff=0;for(int i=-100;i<=100;++i){float x=i*.01f;diff+=std::abs(ud::curve(e,x,.6f,.15f,.4f,a)-ud::curve(e,x,.6f,.15f,.4f,b));}if(diff<.001)return 6;++count;}
- std::cout<<count<<" engine/profile and crossover tests plus dry and bypass passed\n";
+ for(float sr:{44100.f,48000.f,96000.f,192000.f}){ud::RmsMatch match;match.prepare(sr);double a=0,b=0;for(int i=0;i<int(sr*3.f);++i){float x=.2f*std::sin(2*ud::pi*440*i/sr);float y=match.process(x,x*3.f,true);if(!std::isfinite(y))return 7;if(i>int(sr*2.5f)){a+=x*x;b+=y*y;}}if(std::abs(10*std::log10(b/a))>.5)return 8;for(int i=0;i<int(sr);++i)if(!std::isfinite(match.process(0.f,0.f,true)))return 9;++count;}
+ std::cout<<count<<" engine/profile, crossover and RMS tests plus dry and bypass passed\n";
 }
