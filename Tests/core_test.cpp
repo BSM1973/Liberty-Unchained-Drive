@@ -1,4 +1,6 @@
 #include "../Source/Core.h"
+#include "../Source/Mastering.h"
+#include <chrono>
 #include <iostream>
 #include <cstdlib>
 #include <memory>
@@ -13,5 +15,8 @@ int main(){
  auto dsp=std::make_unique<ud::Engine>();ud::Params p;p.bypass=true;if(dsp->sample(0,.123f,p)!=.123f)return 3;p.bypass=false;p.mix=0;p.output=0;if(dsp->sample(0,.123f,p)!=.123f)return 4;
  for(int e:{0,3,4,5,7}){ud::Params a,b;b.tubeType=1;b.consoleType=1;b.fuzzType=1;b.diodeType=1;b.foldType=1;double diff=0;for(int i=-100;i<=100;++i){float x=i*.01f;diff+=std::abs(ud::curve(e,x,.6f,.15f,.4f,a)-ud::curve(e,x,.6f,.15f,.4f,b));}if(diff<.001)return 6;++count;}
  for(float sr:{44100.f,48000.f,96000.f,192000.f}){ud::RmsMatch match;match.prepare(sr);double a=0,b=0;for(int i=0;i<int(sr*3.f);++i){float x=.2f*std::sin(2*ud::pi*440*i/sr);float y=match.process(x,x*3.f,true);if(!std::isfinite(y))return 7;if(i>int(sr*2.5f)){a+=x*x;b+=y*y;}}if(std::abs(10*std::log10(b/a))>.5)return 8;for(int i=0;i<int(sr);++i)if(!std::isfinite(match.process(0.f,0.f,true)))return 9;++count;}
- std::cout<<count<<" engine/profile, crossover and RMS tests plus dry and bypass passed\n";
+ for(int factor:{1,2,4,8,16})for(int bands:{3,5}){ud::LinearSplit fir;fir.configure({180.f,1200.f,4000.f,8000.f},48000.f,factor);std::array<float,4096> hist{},ref{};unsigned pos=0,rp=0;for(int i=0;i<4096;++i){float x=i==0?1.f:.2f*std::sin(i*.071f);ref[rp]=x;float expected=ref[(rp+4096u-unsigned(64*factor))&4095u];rp=(rp+1)&4095u;auto v=fir.process(hist,pos,x,bands);float sum=0;for(int j=0;j<bands;++j)sum+=v[j];if(std::abs(sum-expected)>2e-6f)return 10;}++count;}
+ {ud::Loudness meter;meter.prepare(48000);for(int i=0;i<192000;++i){float x=.1f*std::sin(2*ud::pi*1000*i/48000.f);meter.push(x,x,2);}if(std::abs(meter.momentary()+20.f)>.5f||std::abs(meter.shortTerm()+20.f)>.5f)return 11;++count;}
+ for(int engine=0;engine<10;++engine){auto e=std::make_unique<ud::Engine>();e->reset(48000);ud::Params p;p.engine=engine;p.drive=.7f;p.bands=5;e->configure(p);auto start=std::chrono::steady_clock::now();double energy=0;for(int i=0;i<48000*5;++i){float x=.23f*std::sin(i*.057f)+.1f*std::sin(i*.79f);float y=e->sample(0,x,p);if(!std::isfinite(y))return 12;energy+=y*y;}if(energy<.001)return 13;std::cout<<"Engine "<<engine<<" 5s mono core wall ms="<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()<<"\n";++count;}
+ std::cout<<count<<" engine/profile, crossover, RMS, FIR and loudness tests plus dry and bypass passed\n";
 }

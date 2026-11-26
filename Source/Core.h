@@ -16,7 +16,7 @@ struct Params {
  float blend=.5f,driveB=.3f,cross3=4000,cross4=8000;
  int tubeType=0,tapeSpeed=1,consoleType=0,fuzzType=0,diodeType=0,foldType=0;
  float tubeSag=.35f,tapeMemory=.25f,wow=0,flutter=0,edge=.5f,headroom=0,starve=0,fuzzGate=.1f,diodeThreshold=.7f,diodeHard=.35f,bitDepth=12,rateReduction=0,foldDepth=.5f;
- bool reverseStages=false;
+ bool reverseStages=false,linearPhase=false;
  std::array<float,4> eqF{100,400,1600,6400},eqG{},eqQ{1,1,1,1}; std::array<bool,4> eqOn{true,true,true,true};
  std::array<float,2> preF{400,2000},preG{},preQ{1,1}; float preShelfL=0,preShelfH=0;
  std::array<int,5> bandEngine{}; std::array<float,5> bandDrive{.25f,.25f,.25f,.25f,.25f},bandMix{1,1,1,1,1},bandIn{},bandOut{},bandTone{},bandColor{.4f,.4f,.4f,.4f,.4f},bandDyn{.35f,.35f,.35f,.35f,.35f};
@@ -25,10 +25,25 @@ struct Params {
 struct RmsMatch {
  float reference=0.f,wet=0.f,correction=1.f;float energyAlpha=0.f,gainAlpha=0.f;
  void prepare(float sr){reference=wet=0.f;correction=1.f;energyAlpha=1.f-std::exp(-1.f/(.30f*sr));gainAlpha=1.f-std::exp(-1.f/(.18f*sr));}
- float process(float dry,float processed,bool enabled){reference+=energyAlpha*(dry*dry-reference);wet+=energyAlpha*(processed*processed-wet);float target=1.f;if(enabled&&reference>1.e-8f&&wet>1.e-8f)target=clip(std::sqrt(reference/wet),.12589254f,3.9810717f);correction+=gainAlpha*(target-correction);return processed*correction;}
+ float update(float dryPower,float wetPower,bool enabled){reference+=energyAlpha*(dryPower-reference);wet+=energyAlpha*(wetPower-wet);float target=1.f;if(enabled&&reference>1.e-8f&&wet>1.e-8f)target=clip(std::sqrt(reference/wet),.12589254f,3.9810717f);correction+=gainAlpha*(target-correction);return correction;}
+ float process(float dry,float processed,bool enabled){return processed*update(dry*dry,processed*processed,enabled);}
+};
+// Symmetric windowed-sinc complementary split. Sparse taps operate on the
+// base-rate bandlimited input at oversampled rates; group delay = 64 base samples.
+struct LinearSplit {
+ static constexpr int half=64,mask=4095;
+ std::array<std::array<float,half+1>,4> taps{};std::array<float,4> previous{};int stride=1;float rate=0;
+ void configure(const std::array<float,4>& hz,float baseRate,int factor){
+  if(hz==previous&&rate==baseRate&&stride==factor)return;previous=hz;rate=baseRate;stride=factor;
+  for(int b=0;b<4;++b){float fc=clip(hz[b]/baseRate,.0001f,.45f),sum=0;for(int k=0;k<=half;++k){float w=.42f+.5f*std::cos(pi*k/half)+.08f*std::cos(2*pi*k/half);float v=(k==0?2*fc:std::sin(2*pi*fc*k)/(pi*k))*w;taps[b][k]=v;sum+=k==0?v:2*v;}for(auto& v:taps[b])v/=sum;}
+ }
+ std::array<float,5> process(std::array<float,4096>& hist,unsigned& pos,float x,int bands)const{
+  hist[pos]=x;const unsigned center=(pos+4096u-unsigned(half*stride))&mask;const float dry=hist[center];std::array<float,5> out{};float last=0;
+  for(int b=0;b<bands-1;++b){float low=taps[b][0]*dry;for(int k=1;k<=half;++k){unsigned step=unsigned(k*stride);low+=taps[b][k]*(hist[(center+4096u-step)&mask]+hist[(center+step)&mask]);}out[b]=low-last;last=low;}out[bands-1]=dry-last;pos=(pos+1u)&mask;return out;
+ }
 };
 struct State {float env=0, slow=0, tone=0, body=0, preLow=0,preHigh=0,shelfL=0,shelfH=0,c1=0,c2=0,dc=0,tape=0,hold=0;int counter=0; float circuitEnv=0,magnet=0,tapePhase=0,flutterPhase=0;
- std::array<float,4096> tapeDelay{}; unsigned tapeWrite=0; std::array<float,4> split{};
+ std::array<float,4096> tapeDelay{}; unsigned tapeWrite=0; std::array<float,4> split{};std::array<float,4096> align{},firHistory{};unsigned alignPos=0,firPos=0;
 };
 inline float curve(int engine,float x,float d,float bias,float color,const Params& p=Params{}){
  const float a=1.f+18.f*d,v=x*a,b=bias*.55f;
@@ -58,9 +73,9 @@ struct Biquad {float b0=1,b1=0,b2=0,a1=0,a2=0,z1=0,z2=0;
  float run(float x){float y=b0*x+z1;z1=b1*x-a1*y+z2;z2=b2*x-a2*y;return y;}
 };
 struct Engine {
- float sr=48000; float sagAlpha=0,slowAlpha=0,toneAlpha=0,bodyAlpha=0,dcAlpha=0,bandToneAlpha=0; std::array<RmsMatch,2> rmsMatch{}; std::array<State,2> s{};std::array<std::array<State,5>,2> bs{};std::array<State,2> hybrid{}; std::array<std::array<Biquad,4>,2> eq{};std::array<std::array<Biquad,2>,2> preEq{};
- void reset(float rate){sr=rate;s={};bs={};hybrid={};eq={};preEq={};sagAlpha=coef(12,sr);slowAlpha=coef(8,sr);toneAlpha=coef(2200,sr);bodyAlpha=coef(180,sr);dcAlpha=coef(5,sr);bandToneAlpha=coef(1500,sr);for(auto& a:rmsMatch)a.prepare(sr);}
- void configure(const Params& p){for(int ch=0;ch<2;++ch){for(int j=0;j<4;++j)eq[ch][j].peak(p.eqF[j],p.eqOn[j]?p.eqG[j]:0,p.eqQ[j],sr);for(int j=0;j<2;++j)preEq[ch][j].peak(p.preF[j],p.preG[j],p.preQ[j],sr);}}
+ float sr=48000; int alignmentStride=0,pairChannels=1;LinearSplit linear;RmsMatch linkedMatch;float linkedDry=0,linkedWet=0;float hpAlpha=0,lpAlpha=0,shelfLowAlpha=0,shelfHighAlpha=0,attackAlpha=0,releaseAlpha=0,thresholdGain=0;std::array<float,4> splitAlpha{};float sagAlpha=0,slowAlpha=0,toneAlpha=0,bodyAlpha=0,dcAlpha=0,bandToneAlpha=0; std::array<RmsMatch,2> rmsMatch{}; std::array<State,2> s{};std::array<std::array<State,5>,2> bs{};std::array<State,2> hybrid{}; std::array<std::array<Biquad,4>,2> eq{};std::array<std::array<Biquad,2>,2> preEq{};
+ void reset(float rate){sr=rate;s={};bs={};hybrid={};eq={};preEq={};sagAlpha=coef(12,sr);slowAlpha=coef(8,sr);toneAlpha=coef(2200,sr);bodyAlpha=coef(180,sr);dcAlpha=coef(5,sr);bandToneAlpha=coef(1500,sr);for(auto& a:rmsMatch)a.prepare(sr);linkedMatch.prepare(sr);linkedDry=linkedWet=0;linear.rate=0;}
+ void configure(const Params& p){hpAlpha=coef(p.hp,sr);lpAlpha=coef(p.lp,sr);shelfLowAlpha=coef(180,sr);shelfHighAlpha=coef(4000,sr);attackAlpha=1.f-std::exp(-1000.f/(sr*std::max(.1f,p.attack)));releaseAlpha=1.f-std::exp(-1000.f/(sr*std::max(.1f,p.release)));thresholdGain=gain(p.threshold);auto freq=crossoverFrequencies(p,sr);for(int j=0;j<4;++j)splitAlpha[j]=coef(freq[j],sr);if(p.linearPhase&&p.engine==8)linear.configure(crossoverFrequencies(p,sr/std::max(1,alignmentStride)),sr/std::max(1,alignmentStride),std::max(1,alignmentStride));for(int ch=0;ch<2;++ch){for(int j=0;j<4;++j)eq[ch][j].peak(p.eqF[j],p.eqOn[j]?p.eqG[j]:0,p.eqQ[j],sr);for(int j=0;j<2;++j)preEq[ch][j].peak(p.preF[j],p.preG[j],p.preQ[j],sr);}}
  float nonlinear(State& st,int eng,float x,float d,float bias,float color,float dyn,const Params& p){
  if(eng==0){st.circuitEnv+=sagAlpha*(std::abs(x)-st.circuitEnv);d=clip(d/(1.f+p.tubeSag*st.circuitEnv*2.f),0,1);}
  if(eng==1){
@@ -74,18 +89,18 @@ struct Engine {
  if(eng==6){if(st.counter<=0){st.hold=x;st.counter=1+int(p.rateReduction*std::max(1.f,sr/1000.f));}--st.counter;x=st.hold;}
  float y=curve(eng,x,d,bias,color,p);return y/(1.f+dyn*std::abs(y)*.35f);
  }
- float sample(int ch,float x,const Params& p,float linkedLevel=-1.f){auto& st=s[size_t(ch)]; if(!std::isfinite(x))x=0; const float dry=x;if(p.bypass)return dry;
- x*=gain(p.input);float level=linkedLevel>=0?linkedLevel:std::abs(x);float k=1.f-std::exp(-1000.f/(sr*std::max(0.1f,level>st.env?p.attack:p.release)));st.env+=k*(level-st.env);st.slow+=slowAlpha*(level-st.slow);
- float env=clip((st.env-gain(p.threshold))*p.sensitivity*3.f,0,1);float d=clip(p.drive+p.depth*env+p.transient*(st.env-st.slow),0,1);
- if(p.pre){st.preLow+=coef(p.hp,sr)*(x-st.preLow);x-=st.preLow;st.preHigh+=coef(p.lp,sr)*(x-st.preHigh);x=st.preHigh;for(auto& f:preEq[ch])x=f.run(x);st.shelfL+=coef(180,sr)*(x-st.shelfL);st.shelfH+=coef(4000,sr)*(x-st.shelfH);x+=(gain(p.preShelfL)-1.f)*st.shelfL+(gain(p.preShelfH)-1.f)*(x-st.shelfH); }
+ float sample(int ch,float x,const Params& p,float linkedLevel=-1.f){auto& st=s[size_t(ch)]; if(!std::isfinite(x))x=0; float dry=x;const bool fir=p.engine==8&&p.linearPhase&&alignmentStride>0;if(alignmentStride>0){st.align[st.alignPos]=x;dry=st.align[(st.alignPos+4096u-unsigned(LinearSplit::half*alignmentStride))&4095u];st.alignPos=(st.alignPos+1u)&4095u;if(!fir)x=dry;}if(p.bypass)return dry;
+ x*=gain(p.input);float level=linkedLevel>=0?linkedLevel:std::abs(x);float k=level>st.env?attackAlpha:releaseAlpha;st.env+=k*(level-st.env);st.slow+=slowAlpha*(level-st.slow);
+ float env=clip((st.env-thresholdGain)*p.sensitivity*3.f,0,1);float d=clip(p.drive+p.depth*env+p.transient*(st.env-st.slow),0,1);
+ if(p.pre){st.preLow+=hpAlpha*(x-st.preLow);x-=st.preLow;st.preHigh+=lpAlpha*(x-st.preHigh);x=st.preHigh;for(auto& f:preEq[ch])x=f.run(x);st.shelfL+=shelfLowAlpha*(x-st.shelfL);st.shelfH+=shelfHighAlpha*(x-st.shelfH);x+=(gain(p.preShelfL)-1.f)*st.shelfL+(gain(p.preShelfH)-1.f)*(x-st.shelfH); }
  float y=0;
- if(p.engine==8){auto v=splitBands(st,x,p,sr);int n=p.bands==5?5:3;bool solo=false;for(int i=0;i<n;++i)solo=solo||p.solo[i];for(int i=0;i<n;++i){if(p.mute[i]||(solo&&!p.solo[i]))continue;auto& b=bs[ch][i];float a=v[i]*gain(p.bandIn[i]);float w=nonlinear(b,p.bandEngine[i],a,p.bandDrive[i],p.bias,p.bandColor[i],p.bandDyn[i],p);b.tone+=bandToneAlpha*(w-b.tone);w+=p.bandTone[i]*(w-b.tone)*.5f;y+=(a+(w-a)*p.bandMix[i])*gain(p.bandOut[i]);}}
+ if(p.engine==8){int n=p.bands==5?5:3;std::array<float,5> v{};if(fir)v=linear.process(st.firHistory,st.firPos,x,n);else {float last=0;for(int j=0;j<n-1;++j){st.split[j]+=splitAlpha[j]*(x-st.split[j]);v[j]=st.split[j]-last;last=st.split[j];}v[n-1]=x-last;}bool solo=false;for(int i=0;i<n;++i)solo=solo||p.solo[i];for(int i=0;i<n;++i){if(p.mute[i]||(solo&&!p.solo[i]))continue;auto& b=bs[ch][i];float a=v[i]*gain(p.bandIn[i]);float w=nonlinear(b,p.bandEngine[i],a,p.bandDrive[i],p.bias,p.bandColor[i],p.bandDyn[i],p);b.tone+=bandToneAlpha*(w-b.tone);w+=p.bandTone[i]*(w-b.tone)*.5f;y+=(a+(w-a)*p.bandMix[i])*gain(p.bandOut[i]);}}
  else if(p.engine==9){if(p.parallel){float a=nonlinear(st,p.stageA,x,d,p.bias,p.color,p.dynamics,p);float b=nonlinear(hybrid[ch],p.stageB,x,p.driveB,p.bias,p.color,p.dynamics,p);y=a+(b-a)*p.blend;}else if(p.reverseStages){float b=nonlinear(hybrid[ch],p.stageB,x,p.driveB,p.bias,p.color,p.dynamics,p);float a=nonlinear(st,p.stageA,b,d,p.bias,p.color,p.dynamics,p);y=b+(a-b)*p.blend;}else{float a=nonlinear(st,p.stageA,x,d,p.bias,p.color,p.dynamics,p);float b=nonlinear(hybrid[ch],p.stageB,a,p.driveB,p.bias,p.color,p.dynamics,p);y=a+(b-a)*p.blend;}}
  else y=nonlinear(st,p.engine,x,d,p.bias,p.color,p.dynamics,p);
  st.tone+=toneAlpha*(y-st.tone);st.body+=bodyAlpha*(y-st.body);y+=(p.tone*.65f+(gain(p.presence)-1.f))*(y-st.tone)+(gain(p.body)-1.f)*st.body;
  if(p.post){for(auto& f:eq[ch])y=f.run(y);y+=(gain(p.low)-1.f)*st.body+(gain(p.high)-1.f)*(y-st.tone);}
  st.dc+=dcAlpha*(y-st.dc);y-=st.dc;
- y=rmsMatch[size_t(ch)].process(dry,y,p.autoGain);
+ if(pairChannels==2&&p.link&&p.mode!=2){float g=linkedMatch.correction;if(ch==0){linkedDry=dry*dry;linkedWet=y*y;}else linkedMatch.update((linkedDry+dry*dry)*.5f,(linkedWet+y*y)*.5f,p.autoGain);y*=g;}else y=rmsMatch[size_t(ch)].process(dry,y,p.autoGain);
  y=(dry+(y-dry)*p.mix)*gain(p.output);return std::isfinite(y)?clip(y,-32,32):0;
  }
 };
